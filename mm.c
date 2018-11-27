@@ -26,7 +26,7 @@
 #define MINIMUM 24
 
 #define MAX(x,y) ((x) > (y)? (x) : (y))
-
+#define MIN(x,y) ((x) < (y)? (x) : (y))
 #define PACK(size, alloc) ((size) | (alloc))
 
 #define GET(p) (*(unsigned int *)(p))
@@ -57,6 +57,10 @@
 
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+/* heap consistency checker */
+static int mm_check(void);
+
+
 /* global variable */
 static char *heap_listp;
 static char *free_listp;
@@ -68,6 +72,13 @@ static void *find_fit(size_t size);
 static void place(void *bp, size_t size);
 static void insert(void *bp);
 static void delete(void *bp);
+
+/* mm_check implementation */
+static int mm_check(void) 
+{ return 0;
+}
+
+
 
 /* hepler function implementation */
 
@@ -292,42 +303,75 @@ void mm_free(void *ptr)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    size_t old_size = GET_SIZE(HDRP(ptr));
     size_t asize;
-    void *new_ptr = mm_malloc(size);
+    size_t extendsize;
+    char *bp;  
+    size_t old_size;
+    size_t new_size = ALIGN(size+DSIZE);
+ 
+    if (ptr == NULL) { /* equivalent to mm_malloc */
+        if (size == 0) {
+            return NULL;
+        }  
+        /* Adjust block size to include overhead and alignment reqs. */
+        asize = MAX(ALIGN(size+DSIZE), MINIMUM);
+        //printf("malloc_sizse:      [%d]\n", asize); 
 
-    if (ptr == NULL) {
-        return new_ptr;
-    } else if (size == 0) {
-        mm_free(ptr);
-        return;
-    }
-    asize = MAX(ALIGN(size+DSIZE), MINIMUM);
-    if (asize == old_size) {
-        return ptr; 
+        /* Search the free list for a fit */
+        if ((bp = find_fit(asize)) !=NULL) {
+            place(bp, asize);
+            return bp;
+        }  
 
-    } else if (old_size > asize) {
-        if ((old_size-asize) >= MINIMUM) {
-            PUT(HDRP(ptr), PACK(asize, 1));
-            PUT(FTRP(ptr), PACK(asize, 1));
-            ptr = NEXT_BLKP(ptr);
-            PUT(HDRP(ptr), PACK(old_size-asize, 0));
-            PUT(FTRP(ptr), PACK(old_size-asize, 0));
-            insert(ptr);
-        } else {
-            PUT(HDRP(ptr), PACK(asize, 1));
-            PUT(FTRP(ptr), PACK(asize, 1)); 
-        }
-        return ptr;
+
+        /* No fit found. Get more memory and place the block */
+        extendsize = MAX(asize, CHUNKSIZE);
+        if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
+            return NULL;
+        place(bp, asize);
+        return bp;
+
+    } else if (size == 0) { /* if size=0, then it's equivalent to mm_free */
+        /* change the alloc bit to 0 */
+        old_size = GET_SIZE(HDRP(ptr));
+        PUT(HDRP(ptr), PACK(old_size,0));
+        PUT(FTRP(ptr), PACK(old_size,0));
+        /* insert freed block into the free list */
+        insert(ptr);
+        /* coalesce the freed block */
+        coalesce(ptr);
         
     } else {
-        memcpy(new_ptr, ptr, old_size);
+       old_size = GET_SIZE(HDRP(ptr));   
 
-        return new_ptr;
+       /* allocate new block */
+  
+       /* Search the free list for a fit */
+       if ((bp = find_fit(new_size)) !=NULL) {
+           place(bp, new_size); 
+           memcpy(bp, ptr, MIN(old_size - DSIZE, size));
+           /* Free the original block */
+           PUT(HDRP(ptr), PACK(old_size,0));
+           PUT(FTRP(ptr), PACK(old_size,0));
+           insert(ptr);
+           coalesce(ptr);
+           return bp;
+       }
+
+       /* No fit found. Get more memory and place the block */
+       extendsize = MAX(new_size, CHUNKSIZE);
+       if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
+           return NULL;
+       place(bp, new_size);
+       memcpy(bp, ptr, MIN(old_size - DSIZE, size));
+       /* free the original block */
+       PUT(HDRP(ptr), PACK(old_size,0));
+       PUT(FTRP(ptr), PACK(old_size,0));
+       insert(ptr);
+       coalesce(ptr);
+
+       return bp;     
+    
     }
-
 }
-
-
-
 
